@@ -1,43 +1,19 @@
 <?php
-
- /**
-  * phpagi.php : PHP AGI Functions for Asterisk
-  * Website: http://phpagi.sourceforge.net/
-  *
-  * $Id: phpagi.php,v 2.14 2005/05/25 20:30:46 pinhole Exp $
-  *
-  * Copyright (c) 2003, 2004, 2005 Matthew Asham <matthewa@bcwireless.net>, David Eder <david@eder.us>
-  * All Rights Reserved.
-  *
-  * This software is released under the terms of the GNU Lesser General Public License v2.1
-  * A copy of which is available from http://www.gnu.org/copyleft/lesser.html
-  *
-  * We would be happy to list your phpagi based application on the phpagi
-  * website.  Drop me an Email if you'd like us to list your program.
-  * 
-  *
-  * Written for PHP 4.3.4, should work with older PHP 4.x versions.
-  *
-  * Please submit bug reports, patches, etc to http://sourceforge.net/projects/phpagi/
-  * Gracias. :)
-  *
-  *
-  * @package phpAGI
-  * @version 2.0
-  */
+//	License for all code of this FreePBX module can be found in the license file inside the module directory
+//	Copyright 2013 Schmooze Com Inc.
+//  Copyright (c) 2003, 2004, 2005 Matthew Asham <matthewa@bcwireless.net>, David Eder <david@eder.us>
+//
 
  /**
   */
 
-  if(!class_exists('AGI_AsteriskManager'))
-  {
+  if(!class_exists('AGI_AsteriskManager')) {
     require_once(dirname(__FILE__) . DIRECTORY_SEPARATOR . 'phpagi-asmanager.php');
   }
+  error_reporting(0);
+  @ini_set('display_errors', 0);
 
-  define('AST_CONFIG_DIR', '/etc/asterisk/');
-  define('AST_SPOOL_DIR', '/var/spool/asterisk/');
-  define('AST_TMP_DIR', AST_SPOOL_DIR . '/tmp/');
-  define('DEFAULT_PHPAGI_CONFIG', AST_CONFIG_DIR . '/phpagi.conf');
+  define('DEFAULT_PHPAGI_CONFIG', '/etc/asterisk/phpagi.conf');
 
   define('AST_DIGIT_ANY', '0123456789#*');
 
@@ -92,7 +68,7 @@
     * @var array
     * @access public
     */
-    var $request;
+    public $request;
 
    /**
     * Config variables
@@ -100,7 +76,7 @@
     * @var array
     * @access public
     */
-    var $config;
+    public $config;
 
    /**
     * Asterisk Manager
@@ -108,28 +84,35 @@
     * @var AGI_AsteriskManager
     * @access public
     */
-    var $asmanager;
+    public $asmanager;
 
    /**
     * Input Stream
     *
     * @access private
     */
-    var $in = NULL;
+    public $in = NULL;
 
    /**
     * Output Stream
     *
     * @access private
     */
-    var $out = NULL;
+    public $out = NULL;
+
+   /**
+    * FastAGI socket
+    *
+    * @access private
+    */
+    public $socket = NULL;
 
    /**
     * Audio Stream
     *
     * @access public
     */
-    var $audio = NULL;
+    public $audio = NULL;
 
    /**
     * Constructor
@@ -137,13 +120,13 @@
     * @param string $config is the name of the config file to parse
     * @param array $optconfig is an array of configuration vars and vals, stuffed into $this->config['phpagi']
     */
-    function AGI($config=NULL, $optconfig=array())
-    {
+    function __construct($config=NULL, $optconfig=array(), $socket=NULL) {
       // load config
-      if(!is_null($config) && file_exists($config))
+      if(!is_null($config) && file_exists($config)) {
         $this->config = parse_ini_file($config, true);
-      elseif(file_exists(DEFAULT_PHPAGI_CONFIG))
+      } elseif(file_exists(DEFAULT_PHPAGI_CONFIG)) {
         $this->config = parse_ini_file(DEFAULT_PHPAGI_CONFIG, true);
+      }
 
       // If optconfig is specified, stuff vals and vars into 'phpagi' config array.
       foreach($optconfig as $var=>$val)
@@ -153,19 +136,19 @@
       if(!isset($this->config['phpagi']['error_handler'])) $this->config['phpagi']['error_handler'] = true;
       if(!isset($this->config['phpagi']['debug'])) $this->config['phpagi']['debug'] = false;
       if(!isset($this->config['phpagi']['admin'])) $this->config['phpagi']['admin'] = NULL;
-      if(!isset($this->config['phpagi']['tempdir'])) $this->config['phpagi']['tempdir'] = AST_TMP_DIR;
-
-      // festival TTS config
-      if(!isset($this->config['festival']['text2wave'])) $this->config['festival']['text2wave'] = $this->which('text2wave');
-
-      // swift TTS config
-      if(!isset($this->config['cepstral']['swift'])) $this->config['cepstral']['swift'] = $this->which('swift');
+      $temp = sys_get_temp_dir();
+      if(!isset($this->config['phpagi']['tempdir'])) $this->config['phpagi']['tempdir'] = (!empty($temp) ? $temp : '/tmp');
 
       ob_implicit_flush(true);
 
-      // open stdin & stdout
+      // open input & output
+      if(is_null($socket))
+      {
       $this->in = defined('STDIN') ? STDIN : fopen('php://stdin', 'r');
       $this->out = defined('STDOUT') ? STDOUT : fopen('php://stdout', 'w');
+      }
+      else
+        $this->socket = $socket;
 
       // initialize error handler
       if($this->config['phpagi']['error_handler'] == true)
@@ -173,28 +156,31 @@
         set_error_handler('phpagi_error_handler');
         global $phpagi_error_handler_email;
         $phpagi_error_handler_email = $this->config['phpagi']['admin'];
-        error_reporting(E_ALL);
+//        error_reporting(E_ALL);
       }
 
       // make sure temp folder exists
       $this->make_folder($this->config['phpagi']['tempdir']);
 
       // read the request
-      $str = fgets($this->in);
+      $str = is_null($this->socket) ? fgets($this->in) : socket_read($this->socket, 4096, PHP_NORMAL_READ);
       while($str != "\n")
       {
         $this->request[substr($str, 0, strpos($str, ':'))] = trim(substr($str, strpos($str, ':') + 1));
-        $str = fgets($this->in);
+        $str = is_null($this->socket) ? fgets($this->in) : socket_read($this->socket, 4096, PHP_NORMAL_READ);
       }
 
       // open audio if eagi detected
       if($this->request['agi_enhanced'] == '1.0')
       {
         if(file_exists('/proc/' . getmypid() . '/fd/3'))
+        {
+          // this should work on linux
           $this->audio = fopen('/proc/' . getmypid() . '/fd/3', 'r');
+        }
         elseif(file_exists('/dev/fd/3'))
         {
-          // may need to mount fdescfs
+          // this should work on BSD. may need to mount fdescfs if this fails
           $this->audio = fopen('/dev/fd/3', 'r');
         }
         else
@@ -202,11 +188,6 @@
 
         if($this->audio) stream_set_blocking($this->audio, 0);
       }
-
-      $this->conlog('AGI Request:');
-      $this->conlog(print_r($this->request, true));
-      $this->conlog('PHPAGI internal configuration:');
-      $this->conlog(print_r($this->config, true));
     }
 
    // *********************************************************************************************************
@@ -294,7 +275,7 @@
     */
     function database_get($family, $key)
     {
-      return $this->evaluate("DATABASE GET \"$family\ \"$key\"");
+      return $this->evaluate("DATABASE GET \"$family\" \"$key\"");
     }
 
    /**
@@ -322,7 +303,7 @@
     */
     function exec($application, $options)
     {
-      if(is_array($options)) $options = join('|', $options);
+      if(is_array($options)) $options = join(',', $options);
       return $this->evaluate("EXEC $application $options");
     }
 
@@ -381,6 +362,16 @@
     function get_variable($variable)
     {
       return $this->evaluate("GET VARIABLE $variable");
+    }
+
+   /**
+     * https://wiki.asterisk.org/wiki/display/AST/AGICommand_get+full+variable
+     * @param string $variable name
+     * @return array, see evaluate for return information. ['result'] is 0 if variable hasn't been set, 1 if it has. ['data'] holds the value.
+     */
+    function get_full_variable($variable)
+    {
+      return $this->evaluate("GET FULL VARIABLE $variable");
     }
 
    /**
@@ -704,7 +695,8 @@
     {
       foreach(explode("\n", str_replace("\r\n", "\n", print_r($message, true))) as $msg)
       {
-        @syslog(LOG_WARNING, $msg);
+// Enable for extra logging.
+//        @syslog(LOG_WARNING, $msg);
         $ret = $this->evaluate("VERBOSE \"$msg\" $level");
       }
       return $ret;
@@ -752,10 +744,24 @@
     * @param string $command
     * @return array, see evaluate for return information. ['result'] is -1 on hangup or if application requested hangup, or 0 on non-hangup exit.
     * @param string $args
+    * @return array, see evaluate for return information.
     */
     function exec_agi($command, $args)
     {
       return $this->exec("AGI $command", $args);
+    }
+
+   /**
+    * Set Account Code
+    *
+    * Set the channel account code for billing purposes.
+    *
+    * @param string $accountcode
+    * @return array, see evaluate for return information.
+    */
+    function exec_setaccountcode($accountcode)
+    {
+      return $this->exec('SetAccount', $accountcode);
     }
 
    /**
@@ -767,6 +773,29 @@
     function exec_setlanguage($language='en')
     {
       return $this->exec('SetLanguage', $language);
+    }
+
+   /**
+    * SIPAddHeader
+    *
+    * @param string $header SIP Header
+    * @param string $value SIP Header Value
+    * @return array, see evaluate for return information.
+    */
+    function exec_sipaddheader($header, $value)
+    {
+      return $this->exec('SIPAddHeader', '"'.$header.":".$value.'"');
+    }
+
+   /**
+    * Alertinfo
+    *
+    * @param string $value SIP Alertinfo to set
+    * @return array, see evaluate for return information.
+    */
+    function set_alertinfo($value)
+    {
+      return $this->exec_sipaddheader('Alert-Info',$value);
     }
 
    /**
@@ -801,7 +830,7 @@
     */
     function exec_dial($type, $identifier, $timeout=NULL, $options=NULL, $url=NULL)
     {
-      return $this->exec('Dial', trim("$type/$identifier|$timeout|$options|$url", '|'));
+      return $this->exec('Dial', trim("$type/$identifier,$timeout,$options,$url", ','));
     }
 
    /**
@@ -817,7 +846,7 @@
     */
     function exec_goto($a, $b=NULL, $c=NULL)
     {
-      return $this->exec('Goto', trim("$a|$b|$c", '|'));
+      return $this->exec('Goto', trim("$a,$b,$c", ','));
     }
 
 
@@ -1175,13 +1204,13 @@
     }
 
    /**
-    * Goto - Set context, extension and priority.
+    * Goto_dest - Set context, extension and priority.
     *
     * @param string $context
     * @param string $extension
     * @param string $priority
     */
-    function agigoto($context, $extension='s', $priority=1)
+    function goto_dest($context, $extension='s', $priority=1)
     {
       $this->set_context($context);
       $this->set_extension($extension);
@@ -1253,6 +1282,9 @@
     */
     function text2wav($text, $escape_digits='', $frequency=8000)
     {
+      // festival TTS config
+      if(!isset($this->config['festival']['text2wave'])) $this->config['festival']['text2wave'] = $this->which('text2wave');
+
       $text = trim($text);
       if($text == '') return true;
 
@@ -1302,6 +1334,9 @@
     */
     function swift($text, $escape_digits='', $frequency=8000, $voice=NULL)
     {
+      // swift TTS config
+      if(!isset($this->config['cepstral']['swift'])) $this->config['cepstral']['swift'] = $this->which('swift');
+
       if(!is_null($voice))
         $voice = "-n $voice";
       elseif(isset($this->config['cepstral']['voice']))
@@ -1494,9 +1529,20 @@
     {
       $broken = array('code'=>500, 'result'=>-1, 'data'=>'');
 
+      // FREEPBX-7204 - Discard any cruft, errors, etc, that may have been
+      // produced by Asterisk on startup. This is single threaded here, so
+      // dropping anything pending hopefully shouldn't cause issues.
+      stream_set_blocking($this->in, 0);
+      while (fgets($this->in) !== false) { } // Discard
+      stream_set_blocking($this->in, 1);
+
       // write command
+      if(is_null($this->socket))
+      {
       if(!@fwrite($this->out, trim($command) . "\n")) return $broken;
       fflush($this->out);
+      }
+      elseif(socket_write($this->socket, trim($command) . "\n") === false) return $broken;
 
       // Read result.  Occasionally, a command return a string followed by an extra new line.
       // When this happens, our script will ignore the new line, but it will still be in the
@@ -1506,7 +1552,7 @@
       $count = 0;
       do
       {
-        $str = trim(fgets($this->in, 4096));
+        $str = is_null($this->socket) ? @fgets($this->in, 4096) : @socket_read($this->socket, 4096, PHP_NORMAL_READ);
       } while($str == '' && $count++ < 5);
 
       if($count >= 5)
@@ -1523,11 +1569,12 @@
       {
         $count = 0;
         $str = substr($str, 1) . "\n";
-        $line = fgets($this->in, 4096);
+
+        $line = is_null($this->socket) ? @fgets($this->in, 4096) : @socket_read($this->socket, 4096, PHP_NORMAL_READ);
         while(substr($line, 0, 3) != $ret['code'] && $count < 5)
         {
           $str .= $line;
-          $line = fgets($this->in, 4096);
+          $line = is_null($this->socket) ? @fgets($this->in, 4096) : @socket_read($this->socket, 4096, PHP_NORMAL_READ);
           $count = (trim($line) == '') ? $count + 1 : 0;
         }
         if($count >= 5)
@@ -1550,15 +1597,20 @@
         $in_token = false;
         foreach($parse as $token)
         {
-          if($in_token) // we previously hit a token starting with ')' but not ending in ')'
+          if($in_token) // we previously hit a token starting with '(' but not ending in ')'
           {
-            $ret['data'] .= ' ' . trim($token, '() ');
+	    $tmp = trim($token);
+	    $tmp = $tmp{0} == '(' ? substr($tmp,1):$tmp;
+	    $tmp = substr($tmp,-1) == ')' ? substr($tmp,0,strlen($tmp)-1):$tmp;
+	    $ret['data'] .= ' ' . trim($tmp);
             if($token{strlen($token)-1} == ')') $in_token = false;
           }
           elseif($token{0} == '(')
           {
             if($token{strlen($token)-1} != ')') $in_token = true;
-            $ret['data'] .= ' ' . trim($token, '() ');
+	    $tmp = trim(substr($token,1));
+	    $tmp = $in_token ? $tmp : substr($tmp,0,strlen($tmp)-1);
+	    $ret['data'] .= ' ' . trim($tmp);
           }
           elseif(strpos($token, '='))
           {
@@ -1586,14 +1638,11 @@
     * @param string $str
     * @param integer $vbl verbose level
     */
-    function conlog($str, $vbl=1)
-    {
+    function conlog($str, $vbl=1) {
       static $busy = false;
 
-      if($this->config['phpagi']['debug'] != false)
-      {
-        if(!$busy) // no conlogs inside conlog!!!
-        {
+      if(isset($this->config['phpagi'], $this->config['phpagi']['debug']) && $this->config['phpagi']['debug'] != false) {
+        if(!$busy) { // no conlogs inside conlog!!!
           $busy = true;
           $this->verbose($str, $vbl);
           $busy = false;
@@ -1614,13 +1663,16 @@
       global $_ENV;
       $chpath = is_null($checkpath) ? $_ENV['PATH'] : $checkpath;
 
-      foreach(explode(':', $chpath) as $path)
-        if(is_executable("$path/$cmd"))
-          return "$path/$cmd";
+      foreach(explode(PATH_SEPERATOR, $chpath) as $path)
+        if(!function_exists('is_executable') || is_executable($path . DIRECTORY_SEPERATOR . $cmd))
+          return $path . DIRECTORY_SEPERATOR . $cmd;
 
       if(is_null($checkpath))
+      {
+        if(substr(strtoupper(PHP_OS, 0, 3)) != 'WIN')
         return $this->which($cmd, '/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:'.
                                   '/usr/X11R6/bin:/usr/local/apache/bin:/usr/local/mysql/bin');
+      }
       return false;
     }
 
@@ -1737,4 +1789,3 @@
     }
   }
   $phpagi_error_handler_email = NULL;
-?>
